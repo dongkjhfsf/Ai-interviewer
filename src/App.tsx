@@ -4,18 +4,30 @@ import { HeroTypography } from './components/HeroTypography';
 import { Controls } from './components/Controls';
 import { Visualizer } from './components/Visualizer';
 import { ChatOutput } from './components/ChatOutput';
-import { ApiProvider, InterviewMode, OutputMode, ContextSource } from './types';
+import { ApiSettings } from './components/ApiSettings';
+import { ApiProvider, InterviewMode, OutputMode, ContextSource, ApiConfig } from './types';
 import { useInterview } from './hooks/useInterview';
 
 export default function App() {
-  const [api, setApi] = useState<ApiProvider>('gemini');
+  const [apiConfig, setApiConfig] = useState<ApiConfig>({
+    provider: 'gemini',
+    apiKey: process.env.GEMINI_API_KEY || '',
+  });
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [mode, setMode] = useState<InterviewMode>('tech');
   const [outputMode, setOutputMode] = useState<OutputMode>('voice');
   const [contextSource, setContextSource] = useState<ContextSource>({ type: 'none', value: null });
 
-  const { isListening, connectionState, messages, error, volume, startInterview, stopInterview } = useInterview(
-    api, mode, outputMode, contextSource
+  const { isListening, connectionState, messages, error, volume, startInterview, stopInterview, sendMessage } = useInterview(
+    apiConfig, mode, outputMode, contextSource
   );
+
+  // Force text mode for Doubao as voice is not supported yet
+  React.useEffect(() => {
+    if (apiConfig.provider === 'doubao' && outputMode === 'voice') {
+      setOutputMode('text');
+    }
+  }, [apiConfig.provider, outputMode]);
 
   const handleToggleListening = (listening: boolean) => {
     if (listening) {
@@ -30,7 +42,14 @@ export default function App() {
       {/* Background Noise for texture */}
       <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg viewBox=%220 0 200 200%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cfilter id=%22noiseFilter%22%3E%3CfeTurbulence type=%22fractalNoise%22 baseFrequency=%220.65%22 numOctaves=%223%22 stitchTiles=%22stitch%22/%3E%3C/filter%3E%3Crect width=%22100%25%22 height=%22100%25%22 filter=%22url(%23noiseFilter)%22/%3E%3C/svg%3E")' }}></div>
 
-      <Header api={api} setApi={setApi} />
+      <Header onOpenSettings={() => setIsSettingsOpen(true)} />
+
+      <ApiSettings 
+        isOpen={isSettingsOpen} 
+        onClose={() => setIsSettingsOpen(false)} 
+        config={apiConfig} 
+        onSave={setApiConfig} 
+      />
 
       <main className="relative w-full h-screen flex flex-col justify-center px-6 md:px-20 z-10">
         <div className="flex w-full h-full items-center">
@@ -53,7 +72,8 @@ export default function App() {
                     connectionState === 'connected' ? 'bg-green-500' : 
                     connectionState === 'connecting' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'
                   }`} />
-                  {connectionState === 'connected' ? 'AI Connected' : 
+                  {connectionState === 'connected' ? 
+                    (apiConfig.provider === 'gemini' ? 'Gemini Live Connected' : 'Doubao API Connected') : 
                    connectionState === 'connecting' ? 'Connecting...' : 'Connection Error'}
                 </div>
               )}
@@ -66,7 +86,12 @@ export default function App() {
           </div>
 
           {/* Right Column: Chat Output (if text mode) */}
-          <ChatOutput messages={messages} outputMode={outputMode} />
+          <ChatOutput 
+            messages={messages} 
+            outputMode={outputMode} 
+            onSendMessage={sendMessage}
+            isListening={isListening}
+          />
         </div>
 
         {/* Background Visualizer */}

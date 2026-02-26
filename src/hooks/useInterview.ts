@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality } from '@google/genai';
-import { Message, OutputMode, InterviewMode, ContextSource } from '../types';
+import { Message, OutputMode, InterviewMode, ContextSource, ApiConfig } from '../types';
 
 // Helper for downsampling audio to 16kHz
 function downsampleBuffer(buffer: Float32Array, inputSampleRate: number, outputSampleRate: number) {
@@ -37,7 +37,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer) {
 }
 
 export function useInterview(
-  api: 'gemini' | 'doubao',
+  apiConfig: ApiConfig,
   mode: InterviewMode,
   outputMode: OutputMode,
   contextSource: ContextSource
@@ -56,6 +56,12 @@ export function useInterview(
   const currentAiMessageIdRef = useRef<string | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const volumeIntervalRef = useRef<any>(null);
+  
+  // Keep track of latest messages for API calls without re-binding
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const handleAiText = useCallback((text: string) => {
     setMessages(prev => {
@@ -72,11 +78,170 @@ export function useInterview(
     });
   }, []);
 
+  const getSystemInstruction = useCallback(() => {
+    let instruction = `You are an expert technical interviewer conducting a ${mode === 'tech' ? 'realistic technical interview' : 'module practice session'}. `;
+    if (contextSource.type === 'url' && contextSource.value) {
+      instruction += `The candidate has provided this GitHub URL as context: ${contextSource.value}. Please ask questions related to this project. `;
+    } else if (contextSource.type === 'file' && contextSource.name) {
+      instruction += `The candidate has provided a file named ${contextSource.name} as context. `;
+    } else if (contextSource.type === 'folder' && contextSource.name) {
+      instruction += `The candidate has provided a project folder (${contextSource.name}) as context. `;
+    }
+    instruction += "Keep your responses concise, professional, and conversational. Start by briefly introducing yourself and asking the first question.";
+    return instruction;
+  }, [mode, contextSource]);
+
+  const sendMessage = useCallback(async (text: string) => {
+    // Add user message
+    const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text, timestamp: new Date() };
+    setMessages(prev => [...prev, userMsg]);
+
+    if (apiConfig.provider === 'gemini') {
+      if (sessionRef.current) {
+        sessionRef.current.sendRealtimeInput([{ text }]);
+      }
+    } else if (apiConfig.provider === 'doubao') {
+      // Doubao / OpenAI Compatible Implementation
+      try {
+        const instruction = getSystemInstruction();
+        const history = messagesRef.current.map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.content }));
+        
+        const response = await fetch(apiConfig.baseUrl || 'https://ark.cn-beijing.volces.com/api/v3/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiConfig.apiKey}`
+          },
+          body: JSON.stringify({
+            model: apiConfig.modelName,
+            messages: [
+              { role: 'system', content: instruction },
+              ...history,
+              { role: 'user', content: text }
+            ],
+            stream: true // Enable streaming for better UX
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`API Error: ${response.statusText}`);
+        }
+
+        if (!response.body) throw new Error("No response body");
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let aiMsgId = Date.now().toString();
+        currentAiMessageIdRef.current = aiMsgId;
+        
+        // Initial empty AI message
+        setMessages(prev => [...prev, { id: aiMsgId, role: 'ai', content: '', timestamp: new Date() }]);
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n').filter(line => line.trim() !== '');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.replace('data: ', '');
+              if (dataStr === '[DONE]') break;
+              try {
+                const data = JSON.parse(dataStr);
+                const content = data.choices[0]?.delta?.content || '';
+                if (content) {
+                  handleAiText(content);
+                }
+              } catch (e) {
+                console.error("Error parsing stream:", e);
+              }
+            }
+          }
+        }
+        currentAiMessageIdRef.current = null;
+
+      } catch (err: any) {
+        console.error("Doubao API Error:", err);
+        setError(err.message);
+      }
+    }
+  }, [apiConfig, handleAiText, getSystemInstruction]);
+
   const startInterview = useCallback(async () => {
     try {
       setError(null);
       setMessages([]);
       setConnectionState('connecting');
+
+      if (apiConfig.provider === 'doubao') {
+        // For Doubao, we just set connected state and trigger the greeting
+        if (!apiConfig.apiKey || !apiConfig.modelName) {
+           throw new Error("API Key and Model Name are required for Doubao API.");
+        }
+        setConnectionState('connected');
+        setIsListening(true); // "Listening" in this context means session active
+        
+        // Trigger greeting
+        // We simulate this by calling sendMessage with a hidden prompt or just letting the user start?
+        // Better to have AI start.
+        // We can't "inject" a prompt easily without it showing up as user message if we use sendMessage.
+        // So we'll manually trigger a completion for the greeting.
+        
+        const instruction = getSystemInstruction();
+        try {
+            const response = await fetch(apiConfig.baseUrl || 'https://ark.cn-beijing.volces.com/api/v3/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiConfig.apiKey}`
+              },
+              body: JSON.stringify({
+                model: apiConfig.modelName,
+                messages: [
+                  { role: 'system', content: instruction },
+                  { role: 'user', content: "Hello, I am ready for the interview. Please introduce yourself." }
+                ],
+                stream: true
+              })
+            });
+            
+            if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
+            if (!response.body) throw new Error("No response body");
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let aiMsgId = Date.now().toString();
+            currentAiMessageIdRef.current = aiMsgId;
+            setMessages([{ id: aiMsgId, role: 'ai', content: '', timestamp: new Date() }]);
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const chunk = decoder.decode(value);
+              const lines = chunk.split('\n').filter(line => line.trim() !== '');
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  const dataStr = line.replace('data: ', '');
+                  if (dataStr === '[DONE]') break;
+                  try {
+                    const data = JSON.parse(dataStr);
+                    const content = data.choices[0]?.delta?.content || '';
+                    if (content) handleAiText(content);
+                  } catch (e) {}
+                }
+              }
+            }
+            currentAiMessageIdRef.current = null;
+        } catch (e: any) {
+            setError(e.message);
+            setConnectionState('error');
+        }
+        return;
+      }
+      
+      // GEMINI LIVE LOGIC
       
       // 1. Get User Media
       let stream;
@@ -115,17 +280,9 @@ export function useInterview(
       }, 50);
       
       // 3. Initialize Gemini API
-      const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const genai = new GoogleGenAI({ apiKey: apiConfig.apiKey || process.env.GEMINI_API_KEY });
 
-      let systemInstruction = `You are an expert technical interviewer conducting a ${mode === 'tech' ? 'realistic technical interview' : 'module practice session'}. `;
-      if (contextSource.type === 'url' && contextSource.value) {
-        systemInstruction += `The candidate has provided this GitHub URL as context: ${contextSource.value}. Please ask questions related to this project. `;
-      } else if (contextSource.type === 'file' && contextSource.name) {
-        systemInstruction += `The candidate has provided a file named ${contextSource.name} as context. `;
-      } else if (contextSource.type === 'folder' && contextSource.name) {
-        systemInstruction += `The candidate has provided a project folder (${contextSource.name}) as context. `;
-      }
-      systemInstruction += "Keep your responses concise, professional, and conversational. Start by briefly introducing yourself and asking the first question.";
+      const systemInstruction = getSystemInstruction();
 
       // 4. Connect to Live API
       const sessionPromise = genai.live.connect({
@@ -136,9 +293,7 @@ export function useInterview(
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
           },
           // Enable transcription for both input and output
-          // Note: Do not specify model name inside these objects for the Live API
           inputAudioTranscription: {}, 
-          // outputAudioTranscription: {}, // Optional: if we want AI text transcription from the server
           systemInstruction: { parts: [{ text: systemInstruction }] },
         },
         callbacks: {
@@ -165,9 +320,6 @@ export function useInterview(
             }
 
             // Handle User Transcription
-            // The API returns user transcription in turnComplete or similar events
-            // We'll check for it here. Note: The exact field structure depends on the API version.
-            // For now, we'll check common patterns.
             const userTranscript = message.serverContent?.turnComplete?.parts?.[0]?.text;
             if (userTranscript) {
                setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: userTranscript, timestamp: new Date() }]);
@@ -196,23 +348,16 @@ export function useInterview(
       const session = await sessionPromise;
 
       // 5. Setup Audio Processing & Sending
-      // Use 4096 buffer size for balance between latency and performance
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
       
       processor.onaudioprocess = (e) => {
         const inputData = e.inputBuffer.getChannelData(0);
-        
-        // Downsample to 16kHz if necessary
         const downsampledData = downsampleBuffer(inputData, audioCtx.sampleRate, 16000);
-        
-        // Convert to 16-bit PCM
         const pcm16 = new Int16Array(downsampledData.length);
         for (let i = 0; i < downsampledData.length; i++) {
           let s = Math.max(-1, Math.min(1, downsampledData[i]));
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
-        
-        // Send to API
         const base64 = arrayBufferToBase64(pcm16.buffer);
         session.sendRealtimeInput({
           media: { data: base64, mimeType: 'audio/pcm;rate=16000' }
@@ -224,7 +369,6 @@ export function useInterview(
       processorRef.current = processor;
 
       // 6. Send Initial Greeting Trigger
-      // This ensures the AI speaks first
       await session.sendRealtimeInput({ text: "Hello, I am ready for the interview." });
 
     } catch (err: any) {
@@ -233,7 +377,7 @@ export function useInterview(
       setError(err.message || "Failed to access microphone or connect to API.");
       stopInterview();
     }
-  }, [api, mode, outputMode, contextSource, handleAiText]);
+  }, [apiConfig, mode, outputMode, contextSource, handleAiText, getSystemInstruction]);
 
   const playAudioChunk = (base64: string, audioCtx: AudioContext) => {
     try {
@@ -268,7 +412,6 @@ export function useInterview(
 
   const stopInterview = useCallback(() => {
     setIsListening(false);
-    // Don't reset connectionState here if it's already 'error', to keep the error visible
     setConnectionState(prev => prev === 'error' ? 'error' : 'disconnected');
     
     if (volumeIntervalRef.current) {
@@ -304,6 +447,7 @@ export function useInterview(
     error,
     volume,
     startInterview,
-    stopInterview
+    stopInterview,
+    sendMessage // Expose this
   };
 }
