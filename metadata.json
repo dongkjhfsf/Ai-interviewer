@@ -1,0 +1,7 @@
+{
+  "name": "Mock.ai - Lively Interview",
+  "description": "A real-time voice AI interview platform with a minimal, asymmetric, and lively design.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
