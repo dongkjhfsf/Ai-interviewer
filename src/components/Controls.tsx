@@ -1,7 +1,7 @@
 import React, { useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { FileArchive, FolderArchive, Play, Square, Mic, Type, X, Link as LinkIcon } from 'lucide-react';
-import { InterviewMode, OutputMode, ContextSource } from '../types';
+import { FileArchive, FolderArchive, Play, Square, Mic, Type, X, Link as LinkIcon, Download } from 'lucide-react';
+import { InterviewMode, OutputMode, ContextSource, Message } from '../types';
 
 interface ControlsProps {
   mode: InterviewMode;
@@ -12,13 +12,15 @@ interface ControlsProps {
   setContextSource: (c: ContextSource) => void;
   isListening: boolean;
   setIsListening: (l: boolean) => void;
+  messages: Message[];
 }
 
 export function Controls({
   mode, setMode,
   outputMode, setOutputMode,
   contextSource, setContextSource,
-  isListening, setIsListening
+  isListening, setIsListening,
+  messages
 }: ControlsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -33,6 +35,29 @@ export function Controls({
     if (e.target.files && e.target.files.length > 0) {
       setContextSource({ type: 'folder', value: e.target.files, name: `${e.target.files.length} files selected` });
     }
+  };
+
+  const handleDownloadTranscript = () => {
+    if (messages.length === 0) return;
+
+    const timestamp = new Date().toLocaleString();
+    let content = `Interview Transcript - ${timestamp}\n\n`;
+    
+    messages.forEach(msg => {
+      const time = new Date(msg.timestamp).toLocaleTimeString();
+      const role = msg.role === 'ai' ? 'Interviewer (AI)' : 'Candidate (You)';
+      content += `[${time}] ${role}:\n${msg.content}\n\n`;
+    });
+
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `interview-transcript-${Date.now()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -140,6 +165,19 @@ export function Controls({
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Download Transcript Button */}
+        {!isListening && messages.length > 0 && (
+          <motion.button
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            onClick={handleDownloadTranscript}
+            className="w-12 h-12 rounded-full border border-[#1A1A1A]/10 flex items-center justify-center hover:bg-[#1A1A1A]/5 transition-colors"
+            title="Download Transcript"
+          >
+            <Download className="w-4 h-4 opacity-60" />
+          </motion.button>
+        )}
       </div>
     </motion.div>
   );

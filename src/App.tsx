@@ -42,6 +42,7 @@ export default function App() {
               outputMode={outputMode} setOutputMode={setOutputMode}
               contextSource={contextSource} setContextSource={setContextSource}
               isListening={isListening} setIsListening={handleToggleListening}
+              messages={messages}
             />
             
             {/* Connection Status & Error */}

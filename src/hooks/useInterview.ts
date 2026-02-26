@@ -135,6 +135,10 @@ export function useInterview(
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
           },
+          // Enable transcription for both input and output
+          // Note: Do not specify model name inside these objects for the Live API
+          inputAudioTranscription: {}, 
+          // outputAudioTranscription: {}, // Optional: if we want AI text transcription from the server
           systemInstruction: { parts: [{ text: systemInstruction }] },
         },
         callbacks: {
@@ -150,7 +154,7 @@ export function useInterview(
               playAudioChunk(base64Audio, audioCtx);
             }
             
-            // Handle Text / Transcription
+            // Handle Text / Transcription (AI)
             const parts = message.serverContent?.modelTurn?.parts;
             if (parts) {
               for (const part of parts) {
@@ -158,6 +162,15 @@ export function useInterview(
                   handleAiText(part.text);
                 }
               }
+            }
+
+            // Handle User Transcription
+            // The API returns user transcription in turnComplete or similar events
+            // We'll check for it here. Note: The exact field structure depends on the API version.
+            // For now, we'll check common patterns.
+            const userTranscript = message.serverContent?.turnComplete?.parts?.[0]?.text;
+            if (userTranscript) {
+               setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: userTranscript, timestamp: new Date() }]);
             }
             
             if (message.serverContent?.interrupted) {
